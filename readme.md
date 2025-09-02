@@ -28,7 +28,7 @@ DockerizeAI analyzes your codebase, detects services, ports, dependencies, and e
 
 ### 1️⃣ Clone & Install  
 ```bash
-git clone https://github.com/your-username/dockerize-ai.git
+git clone https://github.com/RohitBCA456/dockerize-ai.git
 cd dockerize-ai
 npm install
 ```
