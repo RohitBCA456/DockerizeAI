@@ -108,13 +108,13 @@ VariableDescriptionRequiredDefaultGEMINI\_API\_KEYYour API key for the Google Ge
 \## Installation and Setup
 --------------------------
 
-1.  Bashgit clone https://github.com/your-username/dockerize-ai.gitcd dockerize-ai
+1.  Bashgit clone https://github.com/RohitBCA456/dockerize-ai.git cd dockerize-ai
     
 2.  Bashnpm install
     
 3.  Code snippet# .envGEMINI\_API\_KEY="YOUR\_API\_KEY\_HERE"
     
-4.  Bashnpm startThe server is now live at http://localhost:4000.
+4.  Bashnpm start The server is now live at http://localhost:4000.
     
 
 \## Usage Walkthrough

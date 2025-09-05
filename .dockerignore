@@ -1,0 +1,17 @@
+# Ignore node modules and logs
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Git & env
+.git
+.gitignore
+.env
+
+# Build artifacts
+Dockerfile
+docker-compose.yml
+
+# Infra (not needed inside image)
+infra/
+.github/

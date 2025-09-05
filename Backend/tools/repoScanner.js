@@ -19,13 +19,12 @@ function getNodeEntryPoint(folderPath) {
   return "index.js";
 }
 
-// NEW: This function detects dependencies for each service.
+// Detect dependencies
 function detectDependencies(folderPath, type) {
   if (type === "node") {
     const packageJsonPath = path.join(folderPath, "package.json");
     try {
       const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-      // Combine dependencies and devDependencies
       return Object.keys({
         ...(packageJson.dependencies || {}),
         ...(packageJson.devDependencies || {}),
@@ -41,10 +40,9 @@ function detectDependencies(folderPath, type) {
     try {
       if (fs.existsSync(requirementsPath)) {
         const requirements = fs.readFileSync(requirementsPath, "utf8");
-        // Split by line and filter out empty lines or comments
         return requirements
           .split("\n")
-          .map((line) => line.split("==")[0].trim()) // Get package name before version
+          .map((line) => line.split("==")[0].trim())
           .filter((line) => line && !line.startsWith("#"));
       }
     } catch (e) {
@@ -55,6 +53,7 @@ function detectDependencies(folderPath, type) {
   return [];
 }
 
+// Detect auxiliary services from .env
 function detectAuxiliaryServices(folderPath) {
   const required = new Set();
   const envPath = path.join(folderPath, ".env");
@@ -65,7 +64,6 @@ function detectAuxiliaryServices(folderPath) {
     const envContent = fs.readFileSync(envPath, "utf8");
     const envConfig = dotenv.parse(envContent);
 
-    // Check both keys and values for clues
     for (const key in envConfig) {
       const lowerKey = key.toLowerCase();
       const lowerValue = envConfig[key].toLowerCase();
@@ -112,7 +110,7 @@ export function scanRepo(repoPath) {
             : ""
         );
         const auxServices = detectAuxiliaryServices(servicePath);
-        const dependencies = detectDependencies(servicePath, type); // Get dependencies
+        const dependencies = detectDependencies(servicePath, type);
 
         auxServices.forEach((service) => allAuxiliaryServices.add(service));
 
@@ -128,5 +126,13 @@ export function scanRepo(repoPath) {
     }
   }
 
-  return { services, requiredServices: Array.from(allAuxiliaryServices) };
+  // 🆕 Decide structure type
+  const serviceCount = Object.keys(services).length;
+  const structure = serviceCount > 1 ? "microservices" : "monolith";
+
+  return {
+    structure, // "microservices" or "monolith"
+    services,
+    requiredServices: Array.from(allAuxiliaryServices),
+  };
 }
