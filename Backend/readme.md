@@ -1,155 +1,241 @@
-DockerizeAI 🐳🤖
-================
+# AI Deployment & DevOps Assistant Agent
 
-**DockerizeAI** is an intelligent DevOps assistant designed to automate and simplify the containerization workflow for modern software projects. By leveraging the power of Large Language Models, it analyzes your codebase, understands its architecture, and generates production-ready Dockerfiles and docker-compose.yml configurations with minimal human intervention.
+**Agent Name:** DeployBot
+**Version:** 1.0.0
+**Purpose:** Your intelligent assistant for simplifying deployments and generating DevOps configurations. I can answer questions about Vercel, Heroku, Netlify, and Docker, and generate `Dockerfile`, Kubernetes manifests, and CI/CD pipeline configurations directly from your local project repository link.
 
-\## Core Philosophy
--------------------
+---
 
-The primary goal of DockerizeAI is to **reduce the cognitive load** associated with DevOps tasks. Writing efficient, secure, and optimized Dockerfiles requires specialized knowledge. This project encapsulates that knowledge within an AI agent, allowing developers to focus on writing code rather than managing infrastructure. It acts as an expert pair programmer for all things containerization.
+## Capabilities Overview
 
-\## System Architecture
------------------------
+1.  **Q&A on Deployment Platforms:** Ask me anything about deploying projects on:
+    * Vercel
+    * Heroku
+    * Netlify
+    * Docker
+2.  **Configuration Generation:** Provide a local repository path, and I'll generate the necessary configuration files for:
+    * Docker (`Dockerfile`)
+    * Kubernetes (`deployment.yaml`, `service.yaml`)
+    * CI/CD Pipelines (GitHub Actions, GitLab CI)
 
-DockerizeAI operates on a simple yet powerful server-based architecture. The user interacts with a REST API, which orchestrates the scanning and generation process.
+---
 
-1.  **API Server (Express.js)**: The entry point for all requests. It handles routing, request validation, and orchestrates the workflow.
-    
-2.  **Repository Scanner (repoScanner.js)**: A specialized module that recursively scans a given file path. It acts as the "eyes" of the system, gathering crucial metadata about the project structure, dependencies, and environment.
-    
-3.  **AI Agent (agent.js)**: The "brain" of the operation. It receives the structured metadata from the scanner and uses it to construct a highly detailed prompt for the Large Language Model (e.g., Google's Gemini).
-    
-4.  **LLM (Gemini)**: The core generative engine. It processes the prompt and returns the formatted Dockerfile and Docker Compose content as a JSON object.
-    
+## 1. Deployment Q&A Module
 
-\## Feature Deep Dive
----------------------
+This module is designed to answer common and specific questions related to popular deployment platforms.
 
-### \### Intelligent Repository Scanner
+### Vercel
 
-The scanner is more than a simple file lister. It actively looks for context clues to build a rich profile of each service in the repository.
+* **Common Questions:**
+    * "How do I deploy a Next.js app to Vercel?"
+    * "What are Vercel's environment variable limits?"
+    * "How does Vercel handle serverless functions?"
+    * "Explain Vercel's pricing model."
+    * "How to set up a custom domain on Vercel?"
 
-*   **Language Detection**: Identifies services by looking for key manifest files:
-    
-    *   package.json -> **Node.js**
-        
-    *   requirements.txt -> **Python**
-        
-*   **Dependency Analysis**: Extracts all dependencies and devDependencies from package.json or packages from requirements.txt. This list is passed to the AI so it can make informed decisions (e.g., using nodemon for a development CMD script).
-    
-*   **Auxiliary Service Detection**: Parses .env files for keywords related to common backing services like databases, caches, and message brokers (postgres, mongodb, redis, rabbitmq). This allows the AI to automatically add these services to the docker-compose.yml.
-    
-*   **Configuration Extraction**: Reads port numbers and entry point scripts (main in package.json) to ensure the generated Dockerfiles are correctly configured.
-    
+* **Example Interaction:**
+    * **User:** "How do I connect my GitHub repo to Vercel for automatic deployments?"
+    * **Agent Response:** "To connect your GitHub repository, go to your Vercel dashboard, click 'New Project', select 'Import Git Repository', choose GitHub, and authorize access. Then, select the repository you want to deploy. Vercel will automatically detect the framework and configure build settings for you. Subsequent pushes to your main branch will trigger automatic deployments."
 
-### \### Advanced AI Prompt Engineering
+### Heroku
 
-The quality of the AI's output is directly proportional to the quality of the prompt. We don't just ask it to "make a Dockerfile." Instead, we provide a rich, structured context.
+* **Common Questions:**
+    * "What is a Heroku Dyno?"
+    * "How do I set up a PostgreSQL database on Heroku?"
+    * "Explain the Heroku build process using buildpacks."
+    * "How do I scale my application on Heroku?"
+    * "How to push a Docker container to the Heroku Container Registry?"
 
-A simplified version of the data sent to the AI looks like this:
+* **Example Interaction:**
+    * **User:** "How do I view logs for my Heroku app?"
+    * **Agent Response:** "You can view logs for your Heroku app using the Heroku CLI. Open your terminal and run the command `heroku logs --tail -a your-app-name`. This will stream the latest logs in real-time."
 
-JSON
+### Netlify
 
-Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQLGroovyHTMLJavaJavaScriptJSONJSXKotlinLaTeXLessLuaMakefileMarkdownMATLABMarkupObjective-CPerlPHPPowerShell.propertiesProtocol BuffersPythonRRubySass (Sass)Sass (Scss)SchemeSQLShellSwiftSVGTSXTypeScriptWebAssemblyYAMLXML`   {    "services": {      "backend": {        "type": "node",        "path": "/path/to/project/backend",        "entryPoint": "server.js",        "port": 3000,        "dependencies": ["express", "mongoose", "nodemon"],        "hasEnvFile": true      }    },    "requiredServices": ["mongodb"]  }   `
+* **Common Questions:**
+    * "What's the difference between Netlify and Vercel?"
+    * "How do Netlify Functions work?"
+    * "How can I set up form handling on Netlify?"
+    * "Explain Netlify's build minutes and bandwidth limits."
+    * "How to configure redirects and rewrites in a `_redirects` file or `netlify.toml`?"
 
-This detailed metadata allows the AI to precisely tailor the Dockerfile and docker-compose.yml to the project's exact requirements.
+* **Example Interaction:**
+    * **User:** "How do I roll back to a previous deployment on Netlify?"
+    * **Agent Response:** "In your Netlify site dashboard, go to the 'Deploys' tab. You will see a list of all your previous deployments. Find the deployment you want to restore and click the 'Publish deploy' button for that specific version."
 
-### \### RAG-Powered Documentation Agent
+### Docker
 
-The /scrape-and-query endpoint uses a Retrieval-Augmented Generation (RAG) pipeline.
+* **Common Questions:**
+    * "What is the difference between a Docker image and a container?"
+    * "How do I reduce the size of my Docker images?"
+    * "Explain Docker networking and how to link containers."
+    * "What is Docker Compose used for?"
+    * "How do I persist data in Docker using volumes?"
 
-1.  **Scrape**: It fetches and cleans documentation from a specified URL.
-    
-2.  **Ingest**: The text is broken into chunks and converted into vector embeddings, which are stored in a vector database.
-    
-3.  **Retrieve & Generate**: When a user asks a question, the agent finds the most relevant chunks of documentation from the database and feeds them to the LLM along with the question, allowing for accurate, context-aware answers.
-    
+* **Example Interaction:**
+    * **User:** "What's the purpose of the `.dockerignore` file?"
+    * **Agent Response:** "The `.dockerignore` file is similar to `.gitignore`. It allows you to specify a list of files and directories that should be excluded from the build context sent to the Docker daemon. This is crucial for preventing sensitive files (like `.env` or `node_modules`) from being included in your image, which makes your builds faster and more secure."
 
-\## API Specification
----------------------
+---
 
-### \### POST /generate-docker
+## 2. Configuration Generation Module
 
-Generates the content for Dockerfiles and Docker Compose files for review.
+To use this module, provide the local path to your project's repository. The agent will analyze the project structure and dependencies (`package.json`, `requirements.txt`, etc.) to generate the appropriate files.
 
-*   JSON{ "repoPath": "/path/to/your/local/project"}
-    
-*   JSON{ "message": "Docker files generated. Please review before writing to disk.", "filesToWrite": { "/path/to/project/backend/Dockerfile": "...", "/path/to/project/docker-compose.yml": "..." }}
-    
-*   **Error Responses**:
-    
-    *   400 Bad Request: If repoPath is missing, not an absolute path, or does not exist.
-        
-    *   500 Internal Server Error: If the AI model fails or an unexpected error occurs.
-        
+**User Input:** `generate docker for /Users/me/projects/my-node-app`
 
-### \### POST /write-docker-files
+### Dockerfile Generation
 
-Writes the reviewed file content to the disk.
+* **Agent Action:** Scans the project for framework (Node.js, Python, Go, etc.) and generates a multi-stage `Dockerfile` for optimized, small, and secure images.
 
-*   JSON{ "filesToWrite": { "/path/to/project/backend/Dockerfile": "...", "/path/to/project/docker-compose.yml": "..." }}
-    
-*   JSON{ "message": "Files written successfully!", "createdFiles": \["/path/to/project/backend/Dockerfile", "..."\]}
-    
-*   **Error Responses**:
-    
-    *   400 Bad Request: If filesToWrite is missing or empty.
-        
-    *   500 Internal Server Error: If there's a file system permission error or other issue during the write process.
-        
+* **Example Generated `Dockerfile` for a Node.js Project:**
+    ```dockerfile
+    # ---- Base Stage ----
+    # Use an official Node.js runtime as a parent image
+    FROM node:18-alpine AS base
+    WORKDIR /usr/src/app
 
-\## Environment Configuration
------------------------------
+    # ---- Dependencies Stage ----
+    FROM base AS dependencies
+    # Copy package.json and package-lock.json
+    COPY package*.json ./
+    # Install app dependencies
+    RUN npm ci --only=production
 
-Create a .env file in the project root to configure the server.
+    # ---- Build Stage ----
+    FROM base AS build
+    COPY package*.json ./
+    # Install all dependencies including devDependencies
+    RUN npm install
+    # Copy source code
+    COPY . .
+    # Build the application (if a build step exists, e.g., for TypeScript/React)
+    RUN npm run build
 
-VariableDescriptionRequiredDefaultGEMINI\_API\_KEYYour API key for the Google Gemini model.**Yes**nullPORTThe port for the Express server to run on.No4000Export to Sheets
+    # ---- Production Stage ----
+    FROM base AS production
+    ENV NODE_ENV=production
+    # Copy production dependencies from the 'dependencies' stage
+    COPY --from=dependencies /usr/src/app/node_modules ./node_modules
+    # Copy built application from the 'build' stage
+    COPY --from=build /usr/src/app/dist ./dist
+    # Copy package.json to the production stage
+    COPY package.json .
 
-\## Installation and Setup
---------------------------
+    EXPOSE 3000
+    CMD [ "node", "dist/main.js" ]
+    ```
 
-1.  Bashgit clone https://github.com/RohitBCA456/dockerize-ai.git cd dockerize-ai
-    
-2.  Bashnpm install
-    
-3.  Code snippet# .envGEMINI\_API\_KEY="YOUR\_API\_KEY\_HERE"
-    
-4.  Bashnpm start The server is now live at http://localhost:4000.
-    
+### Kubernetes Manifest Generation
 
-\## Usage Walkthrough
----------------------
+* **User Input:** `generate kubernetes for /Users/me/projects/my-node-app --port=3000 --replicas=3`
+* **Agent Action:** Generates `deployment.yaml` and `service.yaml` files based on project analysis and user-provided flags.
 
-Let's containerize a sample project located at /Users/dev/my-app.
+* **Example Generated `deployment.yaml`:**
+    ```yaml
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: my-node-app-deployment
+      labels:
+        app: my-node-app
+    spec:
+      replicas: 3
+      selector:
+        matchLabels:
+          app: my-node-app
+      template:
+        metadata:
+          labels:
+            app: my-node-app
+        spec:
+          containers:
+          - name: my-node-app
+            image: your-dockerhub-username/my-node-app:latest
+            ports:
+            - containerPort: 3000
+    ```
 
-1.  Bashcurl -X POST -H "Content-Type: application/json" \\-d '{"repoPath": "/Users/dev/my-app"}' \\http://localhost:4000/generate-dockerThe server will respond with a JSON object containing the proposed file paths and their content. Review this content to ensure it meets your expectations.
-    
-2.  Bashcurl -X POST -H "Content-Type: application/json" \\-d '{ "filesToWrite": { "/Users/dev/my-app/backend/Dockerfile": "...", "..." } }' \\http://localhost:4000/write-docker-filesThe server will confirm that the files have been successfully written to your project directory. You can now use docker-compose up --build to run your newly containerized application.
-    
+* **Example Generated `service.yaml`:**
+    ```yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: my-node-app-service
+    spec:
+      selector:
+        app: my-node-app
+      ports:
+        - protocol: TCP
+          port: 80
+          targetPort: 3000
+      type: LoadBalancer
+    ```
 
-\## Contributing
-----------------
+### CI/CD Pipeline Generation
 
-Contributions are welcome! Please follow these steps to contribute:
+* **User Input:** `generate cicd for /Users/me/projects/my-node-app --platform=github`
+* **Agent Action:** Generates the appropriate pipeline file (`.github/workflows/main.yml`, `.gitlab-ci.yml`, etc.) with steps for building, testing, and deploying the application.
 
-1.  Fork the repository.
-    
-2.  Create a new branch (git checkout -b feature/your-feature-name).
-    
-3.  Make your changes and commit them (git commit -m 'Add some feature').
-    
-4.  Push to the branch (git push origin feature/your-feature-name).
-    
-5.  Open a Pull Request.
-    
+* **Example Generated GitHub Actions (`.github/workflows/main.yml`):**
+    ```yaml
+    name: Node.js CI/CD Pipeline
 
-\## Future Roadmap 🚀
----------------------
+    on:
+      push:
+        branches: [ "main" ]
+      pull_request:
+        branches: [ "main" ]
 
-*   \[ \] **Support for More Languages**: Add scanners for Go (go.mod), Rust (Cargo.toml), and Java (pom.xml).
-    
-*   \[ \] **Multi-Stage Dockerfiles**: Add an option to generate optimized, multi-stage Dockerfiles for production builds.
-    
-*   \[ \] **Kubernetes Manifests**: Extend the AI's capability to generate basic Kubernetes deployment and service manifests.
-    
-*   \[ \] **CI/CD Pipeline Generation**: Generate starter configuration files for GitHub Actions or GitLab CI."# DockerizeAI" 
+    jobs:
+      build-and-test:
+        runs-on: ubuntu-latest
+
+        strategy:
+          matrix:
+            node-version: [16.x, 18.x, 20.x]
+
+        steps:
+        - name: Checkout repository
+          uses: actions/checkout@v3
+
+        - name: Use Node.js ${{ matrix.node-version }}
+          uses: actions/setup-node@v3
+          with:
+            node-version: ${{ matrix.node-version }}
+            cache: 'npm'
+
+        - name: Install dependencies
+          run: npm ci
+
+        - name: Run tests
+          run: npm test
+
+      build-and-push-docker:
+        needs: build-and-test
+        runs-on: ubuntu-latest
+        if: github.ref == 'refs/heads/main' # Only run for pushes to main branch
+
+        steps:
+        - name: Checkout repository
+          uses: actions/checkout@v3
+
+        - name: Set up QEMU
+          uses: docker/setup-qemu-action@v2
+
+        - name: Set up Docker Buildx
+          uses: docker/setup-buildx-action@v2
+
+        - name: Login to Docker Hub
+          uses: docker/login-action@v2
+          with:
+            username: ${{ secrets.DOCKERHUB_USERNAME }}
+            password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+        - name: Build and push Docker image
+          uses: docker/build-push-action@v4
+          with:
+            context: .
+            push: true
+            tags: ${{ secrets.DOCKERHUB_USERNAME }}/my-node-app:latest
+    ```
