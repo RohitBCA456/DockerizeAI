@@ -5,10 +5,13 @@ import path from "path";
 import { scanRepo } from "./tools/repoScanner.js";
 import { createDeployAgent, model } from "./agent.js";
 import { scrapePlatform, ingestToRAG } from "./tools/docsScrapper.js";
+import { connectDB } from "./database/db.js";
 
 dotenv.config();
 const app = express();
 app.use(express.json());
+
+connectDB();
 
 let executor;
 let vectorStore;
@@ -269,6 +272,75 @@ app.post("/generate-devops", async (req, res) => {
     console.error(err);
     res.status(500).json({
       error: "Error during DevOps generation",
+      details: err.message,
+    });
+  }
+});
+
+app.post("/chat-security-report", async (req, res) => {
+  try {
+    const { repoPath } = req.body;
+
+    if (!repoPath || !path.isAbsolute(repoPath)) {
+      return res
+        .status(400)
+        .json({ error: "An absolute repoPath is required." });
+    }
+    if (!fs.existsSync(repoPath)) {
+      return res.status(400).json({ error: "Repository path not found." });
+    }
+
+    // Repo scan again
+    const metadata = scanRepo(repoPath);
+
+    // Ensure report exists
+    const reportPath = path.join(repoPath, "infra", "security-report.txt");
+    if (!fs.existsSync(reportPath)) {
+      return res
+        .status(400)
+        .json({
+          error:
+            "security-report.txt not found. Please run /generate-devops first.",
+        });
+    }
+
+    // Read report content
+    const reportContent = fs.readFileSync(reportPath, "utf-8");
+
+    // Prompt for recommendations
+    const prompt = `
+    You are an expert DevOps security consultant. 
+    Below is the repository metadata and the last generated security report.
+    Based on both, recommend detailed fixes and improvements.
+
+    **Repository Metadata**
+    - Services: ${JSON.stringify(metadata.services, null, 2)}
+    - Required Services: ${JSON.stringify(metadata.requiredServices, null, 2)}
+    - Type: ${metadata.type || "unknown"}
+
+    **Existing Security Report**
+    ${reportContent}
+
+    **Your Task**
+    - Suggest fixes for all identified issues.
+    - Recommend additional improvements (if any).
+    - Do not repeat the same issues blindly; provide actionable steps.
+    - If fixes require code/config changes (Dockerfile, CI/CD, K8s), provide concrete examples.
+    `;
+
+    const response = await model.invoke(prompt);
+
+    // Extract plain text (avoid JSON since it's chat-like output)
+    const recommendations = response.content;
+
+    res.json({
+      message: "Security recommendations generated successfully",
+      recommendations,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: "Error generating recommendations",
       details: err.message,
     });
   }

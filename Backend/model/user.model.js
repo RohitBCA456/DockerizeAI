@@ -1,23 +1,14 @@
 import mongoose, { Schema } from "mongoose";
 
-const githubShema = new Schema(
+const userSchema = new Schema(
   {
-    username: {
+    email: {
       type: String,
       required: true,
     },
-    name: {
+    password: {
       type: String,
-    },
-    followers: {
-      type: Number,
-    },
-    following: {
-      type: Number,
-      default: 0,
-    },
-    bio: {
-      type: String,
+      required: true,
     },
     accessToken: {
       type: String,
@@ -26,4 +17,4 @@ const githubShema = new Schema(
   { timestamps: true }
 );
 
-export const User = mongoose.model("User", githubShema);
+export const User = mongoose.model("User", userSchema);
