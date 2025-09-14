@@ -1,349 +1,356 @@
+// index.js
+
+// 🔹 Top-level error handlers to catch critical failures
+process.on("unhandledRejection", (reason, promise) => {
+  console.error(
+    "CRITICAL: Unhandled Rejection at:",
+    promise,
+    "reason:",
+    reason
+  );
+  process.exit(1);
+});
+
+process.on("uncaughtException", (err, origin) => {
+  console.error(
+    "CRITICAL: Caught exception:",
+    err,
+    "Exception origin:",
+    origin
+  );
+  process.exit(1);
+});
+
+// --- Core Imports ---
 import express from "express";
+import session from "express-session";
+import passport from "passport";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
+import cors from "cors";
+
+// --- Local Imports ---
+import "./config/passport-setup.js"; // Your Passport configuration
+import { connectDB } from "./database/db.js";
 import { scanRepo } from "./tools/repoScanner.js";
 import { createDeployAgent, model } from "./agent.js";
 import { scrapePlatform, ingestToRAG } from "./tools/docsScrapper.js";
-import { connectDB } from "./database/db.js";
 
+// --- Basic Setup ---
 dotenv.config();
 const app = express();
+
+// --- Middleware ---
+app.use(cors({
+    origin: true, // Allows requests from any origin, including your Electron app
+    credentials: true,
+}));
 app.use(express.json());
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "a_very_secure_secret_key",
+    resave: false,
+    saveUninitialized: true,
+    cookie: { secure: process.env.NODE_ENV === "production" },
+  })
+);
+app.use(passport.initialize());
+app.use(passport.session());
 
-connectDB();
+// --- Authentication Middleware ---
+const ensureAuthenticated = (req, res, next) => {
+  if (req.isAuthenticated()) {
+    return next();
+  }
+  res.status(401).json({ error: "User not authenticated. Please log in." });
+};
 
+// --- Authentication Routes ---
+app.get(
+  "/auth/google",
+  passport.authenticate("google", { scope: ["profile", "email"] })
+);
+
+app.get(
+  "/auth/google/callback",
+  passport.authenticate("google", { failureRedirect: "/login-failed" }),
+  (req, res) => {
+    // This script closes the popup window opened for Google login
+    res.send("<script>window.close();</script>");
+  }
+);
+
+app.get("/api/logout", (req, res, next) => {
+  req.logout((err) => {
+    if (err) return next(err);
+    res.status(200).json({ message: "Logout successful" });
+  });
+});
+
+app.get("/api/current_user", (req, res) => {
+  if (req.user) {
+    res.json(req.user);
+  } else {
+    res.status(401).json({ message: "Not logged in" });
+  }
+});
+
+// --- State Management and Helper Functions ---
 let executor;
 let vectorStore;
 const ingestedPlatforms = new Set();
 const docsDir = path.join(process.cwd(), "docs");
 
-console.log("Agent is ready.");
-console.log("Deployment Agent running on http://localhost:4000");
-
 function detectPlatform(query) {
-  query = query.toLowerCase();
-  if (query.includes("vercel")) return "vercel";
-  if (query.includes("netlify")) return "netlify";
-  if (query.includes("docker")) return "docker";
-  if (query.includes("heroku")) return "heroku";
+  const lowerQuery = query.toLowerCase();
+  if (lowerQuery.includes("vercel")) return "vercel";
+  if (lowerQuery.includes("netlify")) return "netlify";
+  if (lowerQuery.includes("docker")) return "docker";
+  if (lowerQuery.includes("heroku")) return "heroku";
   return null;
 }
 
-// 🔹 Helper: write a standard .dockerignore
 function writeDockerignore(targetDir) {
   const dockerignoreContent = `
-# Ignore node modules and logs
+# System files
+.DS_Store
+# Node.js
 node_modules
-npm-debug.log
-yarn-error.log
-
-# Git & env
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+# Git & environment variables
 .git
 .gitignore
 .env
-
-# Build artifacts
+.env*.local
+# Build artifacts and configurations
 Dockerfile
 docker-compose.yml
-
-# Infra (not needed inside image)
+# Project specific (can be customized)
 infra/
 .github/
-`.trim();
-
+dist/
+build/
+  `.trim();
   const dockerignorePath = path.join(targetDir, ".dockerignore");
   fs.writeFileSync(dockerignorePath, dockerignoreContent);
   return dockerignorePath;
 }
 
-app.get("/scrape-and-query", async (req, res) => {
-  const userQuery = req.query.query;
-  if (!userQuery)
+// --- Core API Routes ---
+
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
+app.get("/scrape-and-query", ensureAuthenticated, async (req, res) => {
+  const { query: userQuery } = req.query;
+  if (!userQuery) {
     return res.status(400).json({ error: "Query parameter is required" });
+  }
 
   try {
     const platform = detectPlatform(userQuery);
-    if (!platform)
-      return res
-        .status(400)
-        .json({ error: "Could not detect platform from query" });
+    if (!platform) {
+      return res.status(400).json({
+        error: "Could not detect a deployment platform (e.g., Vercel, Docker) in your query.",
+      });
+    }
 
     const platformDocsPath = path.join(docsDir, `${platform}.md`);
-    if (fs.existsSync(platformDocsPath)) {
-      console.log(`[CACHE] Found ${platform}.md on disk. Skipping scrape.`);
-    } else {
-      console.log(`[CACHE] ${platform}.md not found. Scraping...`);
+    if (!fs.existsSync(platformDocsPath)) {
+      console.log(`[ACTION] Scraping docs for ${platform}...`);
       await scrapePlatform(platform);
-    }
-
-    if (ingestedPlatforms.has(platform)) {
-      console.log(
-        `[CACHE] ${platform} docs already in vector store. Skipping ingestion.`
-      );
     } else {
-      console.log(`[CACHE] Ingesting ${platform} docs into vector store...`);
-      vectorStore = await ingestToRAG(platform, vectorStore);
-      ingestedPlatforms.add(platform);
-      console.log(`[CACHE] Ingestion complete for ${platform}.`);
+      console.log(`[CACHE] Found ${platform}.md on disk.`);
     }
 
-    executor = await createDeployAgent(vectorStore);
-    console.log("Gemini agent is ready.");
+    if (!ingestedPlatforms.has(platform)) {
+      console.log(`[ACTION] Ingesting ${platform} docs and configuring agent...`);
+      vectorStore = await ingestToRAG(platform, vectorStore);
+      executor = await createDeployAgent(vectorStore);
+      ingestedPlatforms.add(platform);
+      console.log(`[SUCCESS] Agent is ready and configured for ${platform}.`);
+    } else {
+      console.log(`[CACHE] ${platform} docs already loaded in agent.`);
+    }
+
+    if (!executor) {
+      return res.status(500).json({ error: "Agent is not initialized. Please try the query again." });
+    }
 
     const result = await executor.call({
-      input: `Using the latest ${platform} documentation, answer the following question:\n${userQuery}`,
+      input: `Using the provided ${platform} documentation, answer the following question: ${userQuery}`,
     });
 
     res.json({ response: result.output });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    console.error("Error in /scrape-and-query:", err);
+    res.status(500).json({ error: "Failed to process your question.", details: err.message });
   }
 });
 
-app.post("/generate-devops", async (req, res) => {
+app.post("/generate-devops", ensureAuthenticated, async (req, res) => {
   try {
     const { repoPath } = req.body;
-
     if (!repoPath || !path.isAbsolute(repoPath)) {
-      return res.status(400).json({ error: "An absolute path is required." });
+      return res.status(400).json({ error: "An absolute repository path is required." });
     }
     if (!fs.existsSync(repoPath)) {
-      return res.status(400).json({ error: "Repository path not found." });
+      return res.status(400).json({ error: "The provided repository path was not found." });
     }
 
     const metadata = scanRepo(repoPath);
 
     const prompt = `
-    You are an expert DevOps engineer. Based on the repository metadata below, generate the following DevOps infrastructure and automation files:
-    
-    **Repository Metadata**
-    - Services: ${JSON.stringify(metadata.services, null, 2)}
-    - Required Auxiliary Services (databases, caches, queues, etc.): ${JSON.stringify(
-      metadata.requiredServices,
-      null,
-      2
-    )}
-    - Project Type: ${metadata.type || "unknown"} (microservices or monolith)
-    
-    **Tasks**
-  1. **Dockerfiles**
-   - Generate one Dockerfile per service.
-   - Optimize for development with multi-stage builds if needed.
-   - Ensure CMD uses the correct entry point.
-   - Add EXPOSE instructions for the service ports.
-   - DO NOT include .dockerignore content here; .dockerignore will be handled separately.
+        You are a world-class DevOps engineer specializing exclusively in the **Node.js and JavaScript/TypeScript ecosystem**. 
+        Your task is to generate production-ready infrastructure files for a Node.js project based on the provided metadata.
 
-    2. **docker-compose.yml**
-       - Include all services and auxiliary infrastructure (databases, caches, queues).
-       - Use env_file if the service has a .env.
-       - Add named volumes for persistent databases.
-       - Ensure all services can communicate correctly via service names.
-    
-    3. **GitHub Actions CI/CD Pipeline**
-       - Generate a complete workflow at .github/workflows/ci.yml
-       - Steps: install dependencies, run tests, build Docker images, push images, deploy to Kubernetes if manifests exist.
-       - Include multi-service handling (each service is built/tested individually if microservices).
-       - Do not generate placeholders, write full YAML content.
-    
-    4. **Kubernetes Manifests**
-       - Generate a deployment, service, and ingress for each service.
-       - Include aux services if detected (e.g., MongoDB, Redis, Postgres).
-       - Place manifests under infra/kubernetes/<serviceName>/deployment.yaml, service.yaml, ingress.yaml.
-       - Ensure container images, ports, and env variables match metadata.
-    
-    5. **Security & Optimization Report**
-       - Analyze Dockerfiles, Kubernetes manifests, and pipeline.
-       - Detect potential security issues (e.g., secrets in Dockerfiles, overly permissive ingress rules).
-       - Provide best-practice suggestions for optimizations.
-    
-    **Output Format**
-    Return a single JSON object only, nothing else:
-    
-    {
-      "dockerfiles": {
-        "serviceName1": "Dockerfile content...",
-        "serviceName2": "Dockerfile content..."
-      },
-      "dockerCompose": "Full docker-compose.yml content...",
-      "ciCdPipeline": "Full GitHub Actions workflow content...",
-      "kubernetes": {
-        "serviceName1": {
-          "deployment": "Full deployment.yaml content...",
-          "service": "Full service.yaml content...",
-          "ingress": "Full ingress.yaml content..."
-        },
-        "serviceName2": { ... }
-      },
-      "securityReport": "Detailed report with issues and fixes"
-    }
-    
-    **Important Notes**
-    - Do NOT generate placeholders or file names only.
-    - Ensure all outputs are complete and production-ready.
-    - Include .dockerignore content for each service in dockerfiles output if needed.
-    - Format YAML and JSON properly.
-    `;
+        **Crucial Rule: All generated code, commands, and configurations MUST be for a Node.js environment. Do NOT generate any Python code, \`requirements.txt\` files, or use Python-related commands like \`pip\` or \`gunicorn\`. The project is strictly JavaScript/TypeScript.**
+
+        **Repository Metadata:**
+        - Services: ${JSON.stringify(metadata.services, null, 2)}
+        - Required Auxiliary Services: ${JSON.stringify(metadata.requiredServices, null, 2)}
+        - Project Type: ${metadata.type || "unknown"}
+        - Service Entry Points: ${JSON.stringify(Object.fromEntries(Object.entries(metadata.services).map(([name, svc]) => [name, svc.entryPoint])))}
+
+        **Your Tasks:**
+        1.  **Dockerfiles:** Generate an optimized, multi-stage Dockerfile for each Node.js service. Use an official Node.js base image (e.g., \`node:20-alpine\`). Follow Node.js best practices.
+        2.  **docker-compose.yml:** Create a complete docker-compose file for local development, including all services and auxiliary infrastructure.
+        3.  **GitHub Actions CI/CD Pipeline:** Generate a complete workflow for \`.github/workflows/ci.yml\`. It must be for a Node.js project, using \`actions/setup-node\` and \`npm\` or \`yarn\`.
+        4.  **Kubernetes Manifests:** For each service, generate a Deployment, Service, and Ingress manifest.
+        5.  **Security & Optimization Report:** Provide a detailed report analyzing the generated files, focusing on Node.js-specific security and best practices.
+
+        **Output Format & Rules:**
+        1.  You MUST return a single, valid JSON object. Do not include any other text, explanations, or markdown formatting outside of the JSON object.
+        2.  **JSON SYNTAX IS CRITICAL:**
+            - Every key and string value must be enclosed in double quotes ("").
+            - **All double quotes (") inside string values MUST be escaped with a backslash (\\"). For example: "echo \\"Hello World\\""**.
+            - Do not use trailing commas.
+            - Ensure all brackets ({}, []) and quotes are correctly matched and closed.
+
+        **Final JSON Structure:**
+        {
+          "dockerfiles": { "serviceName1": "...", "serviceName2": "..." },
+          "dockerCompose": "...",
+          "ciCdPipeline": "...",
+          "kubernetes": { "serviceName1": { "deployment": "...", "service": "...", "ingress": "..." } },
+          "securityReport": "..."
+        }
+        `;
 
     const response = await model.invoke(prompt);
-
-    let jsonString = response.content;
+    let jsonString = response.content.trim();
     const jsonMatch = jsonString.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
     if (jsonMatch && jsonMatch[1]) {
       jsonString = jsonMatch[1];
     }
+
+    // Log the raw string from the AI for debugging JSON errors
+    console.log("--- AI RAW OUTPUT --- \n", jsonString);
     const generatedContent = JSON.parse(jsonString);
 
     const createdFiles = [];
+    const writeAndTrack = (filePath, content) => {
+      if (content && typeof content === "string" && content.trim() !== "") {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, content);
+        createdFiles.push(filePath);
+      }
+    };
 
-    // 1. Write Dockerfiles + .dockerignore per service
     if (generatedContent.dockerfiles) {
-      for (const [serviceName, dockerfileContent] of Object.entries(
-        generatedContent.dockerfiles
-      )) {
+      for (const [serviceName, content] of Object.entries(generatedContent.dockerfiles)) {
         const serviceInfo = metadata.services[serviceName];
-        if (serviceInfo && serviceInfo.path && dockerfileContent) {
-          const dockerfilePath = path.join(serviceInfo.path, "Dockerfile");
-          fs.writeFileSync(dockerfilePath, dockerfileContent);
-          createdFiles.push(dockerfilePath);
-
-          // add .dockerignore
-          const ignorePath = writeDockerignore(serviceInfo.path);
-          createdFiles.push(ignorePath);
+        if (serviceInfo?.path) {
+          writeAndTrack(path.join(serviceInfo.path, "Dockerfile"), content);
+          createdFiles.push(writeDockerignore(serviceInfo.path));
         }
       }
     }
-
-    // 2. Write docker-compose + root .dockerignore
     if (generatedContent.dockerCompose) {
-      const composePath = path.join(repoPath, "docker-compose.yml");
-      fs.writeFileSync(composePath, generatedContent.dockerCompose);
-      createdFiles.push(composePath);
-
-      const ignorePath = writeDockerignore(repoPath);
-      createdFiles.push(ignorePath);
+      writeAndTrack(path.join(repoPath, "docker-compose.yml"), generatedContent.dockerCompose);
+      createdFiles.push(writeDockerignore(repoPath));
     }
-
-    // 3. Write CI/CD pipeline
     if (generatedContent.ciCdPipeline) {
-      const ciDir = path.join(repoPath, ".github", "workflows");
-      fs.mkdirSync(ciDir, { recursive: true });
-      const ciPath = path.join(ciDir, "ci.yml");
-      fs.writeFileSync(ciPath, generatedContent.ciCdPipeline);
-      createdFiles.push(ciPath);
+      writeAndTrack(path.join(repoPath, ".github", "workflows", "ci.yml"), generatedContent.ciCdPipeline);
     }
-
-    // 4. Write Kubernetes manifests
     if (generatedContent.kubernetes) {
-      const k8sDir = path.join(repoPath, "infra", "kubernetes");
-      fs.mkdirSync(k8sDir, { recursive: true });
-
-      for (const [serviceName, manifests] of Object.entries(
-        generatedContent.kubernetes
-      )) {
-        const serviceDir = path.join(k8sDir, serviceName);
-        fs.mkdirSync(serviceDir, { recursive: true });
-
-        for (const [manifestType, content] of Object.entries(manifests)) {
-          if (content && typeof content === "string") {
-            const filePath = path.join(serviceDir, `${manifestType}.yaml`);
-            fs.writeFileSync(filePath, content);
-            createdFiles.push(filePath);
-          }
+      for (const [serviceName, manifests] of Object.entries(generatedContent.kubernetes)) {
+        for (const [type, content] of Object.entries(manifests)) {
+          const manifestPath = path.join(repoPath, "infra", "kubernetes", serviceName, `${type}.yaml`);
+          writeAndTrack(manifestPath, content);
         }
       }
     }
-
-    // 5. Write Security Report
     if (generatedContent.securityReport) {
-      const reportPath = path.join(repoPath, "infra", "security-report.txt");
-      fs.mkdirSync(path.dirname(reportPath), { recursive: true });
-      fs.writeFileSync(reportPath, generatedContent.securityReport);
-      createdFiles.push(reportPath);
+      writeAndTrack(path.join(repoPath, "infra", "security-report.md"), generatedContent.securityReport);
     }
 
     res.json({
-      message: "DevOps files generated and saved successfully!",
+      message: "DevOps files generated successfully!",
       createdFiles,
       generatedContent,
+      metadata,
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      error: "Error during DevOps generation",
-      details: err.message,
-    });
+    console.error("Error in /generate-devops:", err);
+    res.status(500).json({ error: "Error during DevOps file generation.", details: err.message });
   }
 });
 
-app.post("/chat-security-report", async (req, res) => {
+// index.js (add this endpoint after the /chat-security-report endpoint)
+
+// index.js (add this endpoint at the end of the Core API Routes section)
+
+app.post("/chat-security-report", ensureAuthenticated, async (req, res) => {
   try {
-    const { repoPath } = req.body;
+    const { repoPath, question } = req.body;
+    if (!repoPath || !path.isAbsolute(repoPath)) return res.status(400).json({ error: "An absolute repoPath is required." });
+    if (!question) return res.status(400).json({ error: "A question is required for the chat." });
+    
+    const reportPath = path.join(repoPath, "infra", "security-report.md");
+    if (!fs.existsSync(reportPath)) return res.status(404).json({ error: "security-report.md not found." });
 
-    if (!repoPath || !path.isAbsolute(repoPath)) {
-      return res
-        .status(400)
-        .json({ error: "An absolute repoPath is required." });
-    }
-    if (!fs.existsSync(repoPath)) {
-      return res.status(400).json({ error: "Repository path not found." });
-    }
-
-    // Repo scan again
+    const reportContent = fs.readFileSync(reportPath, "utf-8");
     const metadata = scanRepo(repoPath);
 
-    // Ensure report exists
-    const reportPath = path.join(repoPath, "infra", "security-report.txt");
-    if (!fs.existsSync(reportPath)) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "security-report.txt not found. Please run /generate-devops first.",
-        });
-    }
-
-    // Read report content
-    const reportContent = fs.readFileSync(reportPath, "utf-8");
-
-    // Prompt for recommendations
     const prompt = `
-    You are an expert DevOps security consultant. 
-    Below is the repository metadata and the last generated security report.
-    Based on both, recommend detailed fixes and improvements.
+        You are a principal DevOps security consultant acting as a helpful chatbot.
+        Your goal is to discuss the provided security report with the user and answer their questions.
 
-    **Repository Metadata**
-    - Services: ${JSON.stringify(metadata.services, null, 2)}
-    - Required Services: ${JSON.stringify(metadata.requiredServices, null, 2)}
-    - Type: ${metadata.type || "unknown"}
+        **Repository Metadata:**
+        - Services: ${JSON.stringify(metadata.services, null, 2)}
+        - Project Type: ${metadata.type || "unknown"}
 
-    **Existing Security Report**
-    ${reportContent}
+        **Existing Security Report:**
+        ---
+        ${reportContent}
+        ---
 
-    **Your Task**
-    - Suggest fixes for all identified issues.
-    - Recommend additional improvements (if any).
-    - Do not repeat the same issues blindly; provide actionable steps.
-    - If fixes require code/config changes (Dockerfile, CI/CD, K8s), provide concrete examples.
-    `;
+        **User's Question:** "${question}"
+
+        **Your Task:**
+        Based on all the context above, provide a helpful, conversational answer to the user's question. If they ask for a fix, provide a clear code snippet.
+        `;
 
     const response = await model.invoke(prompt);
-
-    // Extract plain text (avoid JSON since it's chat-like output)
-    const recommendations = response.content;
-
     res.json({
-      message: "Security recommendations generated successfully",
-      recommendations,
+      message: "Response generated successfully.",
+      recommendations: response.content,
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      error: "Error generating recommendations",
-      details: err.message,
-    });
+    console.error("Error in /chat-security-report:", err);
+    res.status(500).json({ error: "Error generating security recommendations.", details: err.message });
   }
 });
 
-app.listen(4000);
+// --- Server Startup ---
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, async () => {
+  await connectDB();
+  console.log(`🚀 Deployment Agent running on http://localhost:${PORT}`);
+  console.log("Agent will be initialized on the first query.");
+});

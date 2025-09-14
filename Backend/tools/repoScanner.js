@@ -1,138 +1,106 @@
+// tools/repoScanner.js
+
 import fs from "fs";
 import path from "path";
-import dotenv from "dotenv";
 
-function detectServiceType(folderPath) {
-  if (fs.existsSync(path.join(folderPath, "package.json"))) return "node";
-  if (fs.existsSync(path.join(folderPath, "requirements.txt"))) return "python";
-  return "unknown";
-}
-
-function getNodeEntryPoint(folderPath) {
-  const packageJsonPath = path.join(folderPath, "package.json");
-  try {
-    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-    if (packageJson.main) return packageJson.main;
-  } catch (e) {
-    /* Fallback below */
-  }
-  return "index.js";
-}
-
-// Detect dependencies
-function detectDependencies(folderPath, type) {
-  if (type === "node") {
-    const packageJsonPath = path.join(folderPath, "package.json");
-    try {
-      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-      return Object.keys({
-        ...(packageJson.dependencies || {}),
-        ...(packageJson.devDependencies || {}),
-      });
-    } catch (e) {
-      console.error(`Error parsing package.json in ${folderPath}`, e);
-      return [];
+// A generic function to recursively find files matching a pattern
+function findFiles(dir, pattern, filelist = []) {
+  const files = fs.readdirSync(dir);
+  files.forEach((file) => {
+    const filePath = path.join(dir, file);
+    if (['node_modules', '.git', 'dist', 'build'].includes(file)) {
+      return;
     }
-  }
-
-  if (type === "python") {
-    const requirementsPath = path.join(folderPath, "requirements.txt");
-    try {
-      if (fs.existsSync(requirementsPath)) {
-        const requirements = fs.readFileSync(requirementsPath, "utf8");
-        return requirements
-          .split("\n")
-          .map((line) => line.split("==")[0].trim())
-          .filter((line) => line && !line.startsWith("#"));
-      }
-    } catch (e) {
-      console.error(`Error parsing requirements.txt in ${folderPath}`, e);
+    if (fs.statSync(filePath).isDirectory()) {
+      findFiles(filePath, pattern, filelist);
+    } else if (pattern.test(file)) {
+      filelist.push(filePath);
     }
-  }
-
-  return [];
+  });
+  return filelist;
 }
 
-// Detect auxiliary services from .env
-function detectAuxiliaryServices(folderPath) {
-  const required = new Set();
-  const envPath = path.join(folderPath, ".env");
-
-  if (!fs.existsSync(envPath)) return [];
-
-  try {
-    const envContent = fs.readFileSync(envPath, "utf8");
-    const envConfig = dotenv.parse(envContent);
-
-    for (const key in envConfig) {
-      const lowerKey = key.toLowerCase();
-      const lowerValue = envConfig[key].toLowerCase();
-
-      if (
-        lowerKey.includes("postgres") ||
-        lowerValue.includes("postgres://")
-      ) {
-        required.add("postgres");
-      }
-      if (lowerKey.includes("mongo") || lowerValue.includes("mongodb://")) {
-        required.add("mongodb");
-      }
-      if (lowerKey.includes("redis")) {
-        required.add("redis");
-      }
-      if (lowerKey.includes("rabbit") || lowerKey.includes("amqp")) {
-        required.add("rabbitmq");
-      }
-    }
-  } catch (e) {
-    console.error(`Error parsing .env file in ${folderPath}`, e);
-  }
-
-  return Array.from(required);
-}
-
+// The main scanning function, now with service structure detection
 export function scanRepo(repoPath) {
-  const services = {};
-  const allAuxiliaryServices = new Set();
+  const metadata = {
+    services: {},
+    requiredServices: new Set(),
+    type: "unknown",
+  };
 
-  const folders = fs.readdirSync(repoPath, { withFileTypes: true });
-  for (const folder of folders) {
-    if (folder.isDirectory()) {
-      const servicePath = path.join(repoPath, folder.name);
-      const type = detectServiceType(servicePath);
+  // --- 1. Detect Project Structure (Services) ---
+  // We find all package.json files, as each one typically represents a service.
+  const packageJsonFiles = findFiles(repoPath, /package\.json$/);
+  
+  for (const pjsonPath of packageJsonFiles) {
+    try {
+      const pjsonContent = JSON.parse(fs.readFileSync(pjsonPath, "utf-8"));
+      // Ignore packages with no name (can be workspace configs)
+      if (!pjsonContent.name) continue;
 
-      if (type !== "unknown") {
-        const entryPoint =
-          type === "node" ? getNodeEntryPoint(servicePath) : "app.py";
-        const envConfig = dotenv.parse(
-          fs.existsSync(path.join(servicePath, ".env"))
-            ? fs.readFileSync(path.join(servicePath, ".env"))
-            : ""
-        );
-        const auxServices = detectAuxiliaryServices(servicePath);
-        const dependencies = detectDependencies(servicePath, type);
+      // Use the directory name as the service name for clarity (e.g., 'api', 'frontend')
+      // but fall back to the package name if needed.
+      const servicePath = path.dirname(pjsonPath);
+      const serviceName = path.basename(servicePath);
 
-        auxServices.forEach((service) => allAuxiliaryServices.add(service));
-
-        services[folder.name] = {
-          path: servicePath,
-          type,
-          entryPoint,
-          port: envConfig.PORT || null,
-          hasEnvFile: fs.existsSync(path.join(servicePath, ".env")),
-          dependencies,
-        };
-      }
+      metadata.services[serviceName] = {
+        name: pjsonContent.name,
+        path: servicePath,
+        entryPoint: pjsonContent.main || "index.js", // Best guess for entry point
+        dependencies: Object.keys(pjsonContent.dependencies || {}),
+      };
+      console.log(`[SCANNER] Detected Service: '${serviceName}' at ${servicePath}`);
+    } catch (e) {
+      console.error(`Error processing package.json at ${pjsonPath}:`, e);
     }
   }
 
-  // 🆕 Decide structure type
-  const serviceCount = Object.keys(services).length;
-  const structure = serviceCount > 1 ? "microservices" : "monolith";
+  // --- 2. Check Dependencies for Required Auxiliary Services ---
+  // Now we iterate through the services we just found
+  for (const service of Object.values(metadata.services)) {
+    if (service.dependencies.some(dep => ['mongoose', 'mongodb'].includes(dep))) {
+      metadata.requiredServices.add("MongoDB");
+    }
+    if (service.dependencies.some(dep => ['redis', 'ioredis'].includes(dep))) {
+      metadata.requiredServices.add("Redis");
+    }
+    if (service.dependencies.includes('pg')) {
+      metadata.requiredServices.add("PostgreSQL");
+    }
+  }
 
-  return {
-    structure, // "microservices" or "monolith"
-    services,
-    requiredServices: Array.from(allAuxiliaryServices),
-  };
+  // --- 3. Scan .env Files (for additional clues) ---
+  const envFiles = findFiles(repoPath, /\.env(\..*)?$/);
+  // (Regex checks for env files remain the same, they just add to the Set)
+  for (const file of envFiles) {
+    try {
+        const content = fs.readFileSync(file, "utf-8");
+        if (/^(MONGO|MONGODB|DATABASE)_URI\s*=\s*['"]?mongodb/im.test(content)) metadata.requiredServices.add("MongoDB");
+        if (/^(REDIS_URL|REDIS_HOST)/im.test(content)) metadata.requiredServices.add("Redis");
+        if (/^(POSTGRES_URL|DATABASE_URL\s*=\s*['"]?postgres)/im.test(content)) metadata.requiredServices.add("PostgreSQL");
+    } catch (e) { /* Ignore read errors */ }
+  }
+
+  // --- 4. Scan File Content (Fallback) ---
+  const jsFiles = findFiles(repoPath, /\.(js|mjs|ts)$/);
+  for (const file of jsFiles) {
+    try {
+        const content = fs.readFileSync(file, "utf-8");
+        if (/mongoose|mongodb(\+srv)?:\/\//i.test(content)) metadata.requiredServices.add("MongoDB");
+    } catch (e) { /* Ignore read errors */ }
+  }
+  
+  // --- Finalize Metadata ---
+  metadata.requiredServices = Array.from(metadata.requiredServices);
+
+  // The project type detection will now work correctly
+  const serviceCount = Object.keys(metadata.services).length;
+  if (serviceCount > 1) {
+    metadata.type = "microservices";
+  } else if (serviceCount === 1) {
+    metadata.type = "monolith";
+  }
+
+  console.log('[SCANNER] Final Metadata:', JSON.stringify(metadata, null, 2));
+  return metadata;
 }
