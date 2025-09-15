@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { api } from "../api";
 import Button from "./ui/Button";
 import Card from "./ui/Card";
@@ -9,10 +9,8 @@ import { UploadCloud, XCircle, FileCode2, Zap } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-// (The transformContentToFlatMap utility function remains the same)
 const transformContentToFlatMap = (content, repoPath, metadata) => {
-  // ... same implementation as before
-  if (!content) return {};
+  if (!content || !repoPath || !metadata) return {};
   const allFiles = {};
   if (content.dockerfiles) {
     Object.entries(content.dockerfiles).forEach(
@@ -52,8 +50,36 @@ const DevOpsView = () => {
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [result, setResult] = useState(null);
-  const [selectedFile, setSelectedFile] = useState(null);
+
+  // ✅ FIX: Initialize state from sessionStorage to persist across tabs
+  const [result, setResult] = useState(() => {
+    const saved = sessionStorage.getItem("devopsResult");
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [selectedFile, setSelectedFile] = useState(() => {
+    const saved = sessionStorage.getItem("selectedDevopsFile");
+    return saved ? JSON.parse(saved) : null;
+  });
+
+  // ✅ FIX: Use useEffect to save results to sessionStorage when they change
+  useEffect(() => {
+    if (result) {
+      sessionStorage.setItem("devopsResult", JSON.stringify(result));
+    } else {
+      sessionStorage.removeItem("devopsResult");
+    }
+  }, [result]);
+
+  useEffect(() => {
+    if (selectedFile) {
+      sessionStorage.setItem(
+        "selectedDevopsFile",
+        JSON.stringify(selectedFile)
+      );
+    } else {
+      sessionStorage.removeItem("selectedDevopsFile");
+    }
+  }, [selectedFile]);
 
   const handleSelectRepo = async () => {
     const path = await window.electronAPI.openFolderDialog();
@@ -68,17 +94,32 @@ const DevOpsView = () => {
       setError("Please select a repository path first.");
       return;
     }
+
+    // Store the path for the API call, then clear the input
+    const pathToGenerate = repoPath;
+
     setLoading(true);
     setError(null);
+
+    // Clear previous results from state and storage
     setResult(null);
     setSelectedFile(null);
+
     try {
-      const data = await api.generateDevops(repoPath);
-      setResult(data);
+      const data = await api.generateDevops(pathToGenerate);
+
+      // ✅ FIX: Store the repo path with the result for later use
+      const resultWithRepoPath = { ...data, sourceRepoPath: pathToGenerate };
+      setResult(resultWithRepoPath);
+
+      // ✅ FIX: Clear the input path after a successful generation starts
+      setRepoPath("");
+      localStorage.removeItem("repoPath");
+
       if (data.generatedContent) {
         const flatMap = transformContentToFlatMap(
           data.generatedContent,
-          repoPath,
+          pathToGenerate, // Use the path from this generation
           data.metadata
         );
         const firstFilePath = Object.keys(flatMap)[0];
@@ -106,17 +147,16 @@ const DevOpsView = () => {
 
   const files = useMemo(() => {
     if (!result) return {};
+    // ✅ FIX: Use the saved repo path from the result object
     return transformContentToFlatMap(
       result.generatedContent,
-      repoPath,
+      result.sourceRepoPath,
       result.metadata
     );
-  }, [result, repoPath]);
+  }, [result]);
 
   return (
-    // Add a subtle background pattern for depth
     <div className="space-y-8 bg-gray-900 bg-[radial-gradient(#ffffff1a_1px,transparent_1px)] [background-size:32px_32px]">
-      {/* 🔹 Redesigned Header/Action Area */}
       <div className="p-6 bg-gradient-to-br from-gray-800 to-gray-900 border border-gray-700 rounded-xl shadow-2xl">
         <h1 className="text-3xl font-bold text-white mb-2">
           DevOps File Generator
@@ -142,7 +182,7 @@ const DevOpsView = () => {
             disabled={loading || !repoPath}
             variant="primary"
             size="lg"
-            className="shadow-lg shadow-indigo-500/30 flex" 
+            className="shadow-lg shadow-indigo-500/30 flex items-center"
           >
             {loading ? <Spinner size="sm" /> : <Zap className="w-5 h-5 mr-2" />}
             Generate
@@ -156,7 +196,6 @@ const DevOpsView = () => {
         )}
       </div>
 
-      {/* 🔹 Animated Loading and Results sections */}
       <div
         className={`transition-opacity duration-500 ease-in-out ${
           loading ? "opacity-100" : "opacity-0 h-0"
@@ -184,7 +223,7 @@ const DevOpsView = () => {
                 title="Generated Files"
                 files={files}
                 onFileSelect={setSelectedFile}
-                selectedFilePath={selectedFile?.path} // Pass selected file for active styling
+                selectedFilePath={selectedFile?.path}
               />
             </div>
             <div className="lg:col-span-2">

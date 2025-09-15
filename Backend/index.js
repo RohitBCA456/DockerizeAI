@@ -30,22 +30,32 @@ import fs from "fs";
 import path from "path";
 import cors from "cors";
 
+// --- LangChain Core Imports ---
+import { PromptTemplate } from "@langchain/core/prompts";
+import { AIMessage, HumanMessage } from "@langchain/core/messages"; // ✅ Added for chat history
+import {
+  JsonOutputParser,
+  StringOutputParser,
+} from "@langchain/core/output_parsers";
+
 // --- Local Imports ---
 import "./config/passport-setup.js"; // Your Passport configuration
 import { connectDB } from "./database/db.js";
 import { scanRepo } from "./tools/repoScanner.js";
 import { createDeployAgent, model } from "./agent.js";
-import { scrapePlatform, ingestToRAG } from "./tools/docsScrapper.js";
+import { ChatMessage } from "./model/ChatMessage.js"; // ✅ Import the new model
 
 // --- Basic Setup ---
 dotenv.config();
 const app = express();
 
 // --- Middleware ---
-app.use(cors({
-    origin: true, // Allows requests from any origin, including your Electron app
+app.use(
+  cors({
+    origin: true,
     credentials: true,
-}));
+  })
+);
 app.use(express.json());
 app.use(
   session({
@@ -67,6 +77,7 @@ const ensureAuthenticated = (req, res, next) => {
 };
 
 // --- Authentication Routes ---
+// ... (No changes to your auth routes)
 app.get(
   "/auth/google",
   passport.authenticate("google", { scope: ["profile", "email"] })
@@ -76,7 +87,6 @@ app.get(
   "/auth/google/callback",
   passport.authenticate("google", { failureRedirect: "/login-failed" }),
   (req, res) => {
-    // This script closes the popup window opened for Google login
     res.send("<script>window.close();</script>");
   }
 );
@@ -97,98 +107,143 @@ app.get("/api/current_user", (req, res) => {
 });
 
 // --- State Management and Helper Functions ---
+// ... (No changes to helper functions)
 let executor;
-let vectorStore;
-const ingestedPlatforms = new Set();
 const docsDir = path.join(process.cwd(), "docs");
 
-function detectPlatform(query) {
-  const lowerQuery = query.toLowerCase();
-  if (lowerQuery.includes("vercel")) return "vercel";
-  if (lowerQuery.includes("netlify")) return "netlify";
-  if (lowerQuery.includes("docker")) return "docker";
-  if (lowerQuery.includes("heroku")) return "heroku";
-  return null;
-}
+const writeDockerignore = (dirPath) => {
+  const content = `
+# Dependency directories
+node_modules/
 
-function writeDockerignore(targetDir) {
-  const dockerignoreContent = `
-# System files
-.DS_Store
-# Node.js
-node_modules
+# Build output
+dist/
+build/
+
+# Logs
+logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-# Git & environment variables
-.git
-.gitignore
+
+# Environment variables
 .env
-.env*.local
-# Build artifacts and configurations
-Dockerfile
-docker-compose.yml
-# Project specific (can be customized)
-infra/
-.github/
-dist/
-build/
+.env.*
+!.env.example
+
+# Git directory
+.git
+
+# IDE configs
+.vscode/
+.idea/
   `.trim();
-  const dockerignorePath = path.join(targetDir, ".dockerignore");
-  fs.writeFileSync(dockerignorePath, dockerignoreContent);
-  return dockerignorePath;
-}
+
+  const filePath = path.join(dirPath, ".dockerignore");
+
+  // Only write the file if it doesn't already exist
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, content);
+  }
+
+  return filePath; // Return the path for the tracking array
+};
 
 // --- Core API Routes ---
-
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok" });
 });
 
-app.get("/scrape-and-query", ensureAuthenticated, async (req, res) => {
-  const { query: userQuery } = req.query;
-  if (!userQuery) {
-    return res.status(400).json({ error: "Query parameter is required" });
+// ✅ NEW: Endpoint to fetch chat history for the authenticated user
+app.get("/api/chat-history", ensureAuthenticated, async (req, res) => {
+  try {
+    const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
+
+    const messages = await ChatMessage.find({
+      userId: req.user.id,
+      timestamp: { $gte: fiveDaysAgo },
+    }).sort({ timestamp: "asc" });
+
+    res.json(messages);
+  } catch (err) {
+    console.error("Error fetching chat history:", err);
+    res.status(500).json({ error: "Failed to fetch chat history." });
+  }
+});
+
+// ✅ UPDATED: DevOps Chatbot now uses history and relies on existing docs
+app.get("/api/chat-history", ensureAuthenticated, async (req, res) => {
+  try {
+    const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
+    const messages = await ChatMessage.find({
+      userId: req.user.id,
+      timestamp: { $gte: fiveDaysAgo },
+    }).sort({ timestamp: "asc" });
+    res.json(messages);
+  } catch (err) {
+    console.error("Error fetching chat history:", err);
+    res.status(500).json({ error: "Failed to fetch chat history." });
+  }
+});
+
+// The main chatbot endpoint with conversation history
+app.post("/devops-chatbot", ensureAuthenticated, async (req, res) => {
+  const { question } = req.body;
+  if (!question) {
+    return res.status(400).json({ error: "Question is required." });
   }
 
   try {
-    const platform = detectPlatform(userQuery);
-    if (!platform) {
-      return res.status(400).json({
-        error: "Could not detect a deployment platform (e.g., Vercel, Docker) in your query.",
-      });
-    }
-
-    const platformDocsPath = path.join(docsDir, `${platform}.md`);
-    if (!fs.existsSync(platformDocsPath)) {
-      console.log(`[ACTION] Scraping docs for ${platform}...`);
-      await scrapePlatform(platform);
-    } else {
-      console.log(`[CACHE] Found ${platform}.md on disk.`);
-    }
-
-    if (!ingestedPlatforms.has(platform)) {
-      console.log(`[ACTION] Ingesting ${platform} docs and configuring agent...`);
-      vectorStore = await ingestToRAG(platform, vectorStore);
-      executor = await createDeployAgent(vectorStore);
-      ingestedPlatforms.add(platform);
-      console.log(`[SUCCESS] Agent is ready and configured for ${platform}.`);
-    } else {
-      console.log(`[CACHE] ${platform} docs already loaded in agent.`);
-    }
-
+    // Initialize the agent on the first request and reuse it for subsequent requests.
+    // This now creates the agent WITH the web search tool included.
     if (!executor) {
-      return res.status(500).json({ error: "Agent is not initialized. Please try the query again." });
+      console.log("[INFO] Initializing agent for the first time...");
+      executor = await createDeployAgent(); // You can pass a vectorStore here if needed
+      console.log(
+        "[INFO] Agent initialized successfully with web search capabilities."
+      );
     }
 
-    const result = await executor.call({
-      input: `Using the provided ${platform} documentation, answer the following question: ${userQuery}`,
-    });
+    // 1. Fetch recent chat history from the database for the current user.
+    const recentMessages = await ChatMessage.find({
+      userId: req.user.id,
+    })
+      .sort({ timestamp: -1 })
+      .limit(10); // Get the last 10 messages (5 turns)
 
-    res.json({ response: result.output });
+    // 2. Format history for the LangChain agent.
+    // The order must be oldest to newest, so we reverse the DB query result.
+    const chatHistory = recentMessages
+      .reverse()
+      .map((msg) =>
+        msg.role === "human"
+          ? new HumanMessage(msg.content)
+          : new AIMessage(msg.content)
+      );
+
+    // 3. Invoke the agent with the new question and the conversation history.
+    // The agent will autonomously decide whether to use its search tool.
+    const result = await executor.invoke({
+      input: question,
+      chat_history: chatHistory,
+    });
+    const aiResponse = result.output;
+
+    // 4. Save the new conversation turn to the database.
+    await ChatMessage.insertMany([
+      { userId: req.user.id, role: "human", content: question },
+      { userId: req.user.id, role: "ai", content: aiResponse },
+    ]);
+
+    // 5. Send the response back to the client.
+    res.json({ response: aiResponse });
   } catch (err) {
-    console.error("Error in /scrape-and-query:", err);
-    res.status(500).json({ error: "Failed to process your question.", details: err.message });
+    console.error("Error in /devops-chatbot route:", err);
+    res.status(500).json({
+      error: "Failed to process your question.",
+      details: err.message,
+    });
   }
 });
 
@@ -196,25 +251,29 @@ app.post("/generate-devops", ensureAuthenticated, async (req, res) => {
   try {
     const { repoPath } = req.body;
     if (!repoPath || !path.isAbsolute(repoPath)) {
-      return res.status(400).json({ error: "An absolute repository path is required." });
+      return res
+        .status(400)
+        .json({ error: "An absolute repository path is required." });
     }
     if (!fs.existsSync(repoPath)) {
-      return res.status(400).json({ error: "The provided repository path was not found." });
+      return res
+        .status(400)
+        .json({ error: "The provided repository path was not found." });
     }
 
     const metadata = scanRepo(repoPath);
 
-    const prompt = `
+    const promptTemplate = PromptTemplate.fromTemplate(`
         You are a world-class DevOps engineer specializing exclusively in the **Node.js and JavaScript/TypeScript ecosystem**. 
         Your task is to generate production-ready infrastructure files for a Node.js project based on the provided metadata.
 
         **Crucial Rule: All generated code, commands, and configurations MUST be for a Node.js environment. Do NOT generate any Python code, \`requirements.txt\` files, or use Python-related commands like \`pip\` or \`gunicorn\`. The project is strictly JavaScript/TypeScript.**
 
         **Repository Metadata:**
-        - Services: ${JSON.stringify(metadata.services, null, 2)}
-        - Required Auxiliary Services: ${JSON.stringify(metadata.requiredServices, null, 2)}
-        - Project Type: ${metadata.type || "unknown"}
-        - Service Entry Points: ${JSON.stringify(Object.fromEntries(Object.entries(metadata.services).map(([name, svc]) => [name, svc.entryPoint])))}
+        - Services: {services}
+        - Required Auxiliary Services: {requiredServices}
+        - Project Type: {projectType}
+        - Service Entry Points: {entryPoints}
 
         **Your Tasks:**
         1.  **Dockerfiles:** Generate an optimized, multi-stage Dockerfile for each Node.js service. Use an official Node.js base image (e.g., \`node:20-alpine\`). Follow Node.js best practices.
@@ -229,28 +288,35 @@ app.post("/generate-devops", ensureAuthenticated, async (req, res) => {
             - Every key and string value must be enclosed in double quotes ("").
             - **All double quotes (") inside string values MUST be escaped with a backslash (\\"). For example: "echo \\"Hello World\\""**.
             - Do not use trailing commas.
-            - Ensure all brackets ({}, []) and quotes are correctly matched and closed.
+            - Ensure all brackets ({{}}, []) and quotes are correctly matched and closed.
 
         **Final JSON Structure:**
-        {
-          "dockerfiles": { "serviceName1": "...", "serviceName2": "..." },
+        {{
+          "dockerfiles": {{ "serviceName1": "...", "serviceName2": "..." }},
           "dockerCompose": "...",
           "ciCdPipeline": "...",
-          "kubernetes": { "serviceName1": { "deployment": "...", "service": "...", "ingress": "..." } },
+          "kubernetes": {{ "serviceName1": {{ "deployment": "...", "service": "...", "ingress": "..." }} }},
           "securityReport": "..."
-        }
-        `;
+        }}
+    `);
 
-    const response = await model.invoke(prompt);
-    let jsonString = response.content.trim();
-    const jsonMatch = jsonString.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-    if (jsonMatch && jsonMatch[1]) {
-      jsonString = jsonMatch[1];
-    }
+    const generationChain = promptTemplate
+      .pipe(model)
+      .pipe(new JsonOutputParser());
 
-    // Log the raw string from the AI for debugging JSON errors
-    console.log("--- AI RAW OUTPUT --- \n", jsonString);
-    const generatedContent = JSON.parse(jsonString);
+    const generatedContent = await generationChain.invoke({
+      services: JSON.stringify(metadata.services, null, 2),
+      requiredServices: JSON.stringify(metadata.requiredServices, null, 2),
+      projectType: metadata.type || "unknown",
+      entryPoints: JSON.stringify(
+        Object.fromEntries(
+          Object.entries(metadata.services).map(([name, svc]) => [
+            name,
+            svc.entryPoint,
+          ])
+        )
+      ),
+    });
 
     const createdFiles = [];
     const writeAndTrack = (filePath, content) => {
@@ -262,7 +328,9 @@ app.post("/generate-devops", ensureAuthenticated, async (req, res) => {
     };
 
     if (generatedContent.dockerfiles) {
-      for (const [serviceName, content] of Object.entries(generatedContent.dockerfiles)) {
+      for (const [serviceName, content] of Object.entries(
+        generatedContent.dockerfiles
+      )) {
         const serviceInfo = metadata.services[serviceName];
         if (serviceInfo?.path) {
           writeAndTrack(path.join(serviceInfo.path, "Dockerfile"), content);
@@ -271,22 +339,39 @@ app.post("/generate-devops", ensureAuthenticated, async (req, res) => {
       }
     }
     if (generatedContent.dockerCompose) {
-      writeAndTrack(path.join(repoPath, "docker-compose.yml"), generatedContent.dockerCompose);
+      writeAndTrack(
+        path.join(repoPath, "docker-compose.yml"),
+        generatedContent.dockerCompose
+      );
       createdFiles.push(writeDockerignore(repoPath));
     }
     if (generatedContent.ciCdPipeline) {
-      writeAndTrack(path.join(repoPath, ".github", "workflows", "ci.yml"), generatedContent.ciCdPipeline);
+      writeAndTrack(
+        path.join(repoPath, ".github", "workflows", "ci.yml"),
+        generatedContent.ciCdPipeline
+      );
     }
     if (generatedContent.kubernetes) {
-      for (const [serviceName, manifests] of Object.entries(generatedContent.kubernetes)) {
+      for (const [serviceName, manifests] of Object.entries(
+        generatedContent.kubernetes
+      )) {
         for (const [type, content] of Object.entries(manifests)) {
-          const manifestPath = path.join(repoPath, "infra", "kubernetes", serviceName, `${type}.yaml`);
+          const manifestPath = path.join(
+            repoPath,
+            "infra",
+            "kubernetes",
+            serviceName,
+            `${type}.yaml`
+          );
           writeAndTrack(manifestPath, content);
         }
       }
     }
     if (generatedContent.securityReport) {
-      writeAndTrack(path.join(repoPath, "infra", "security-report.md"), generatedContent.securityReport);
+      writeAndTrack(
+        path.join(repoPath, "infra", "security-report.md"),
+        generatedContent.securityReport
+      );
     }
 
     res.json({
@@ -297,53 +382,71 @@ app.post("/generate-devops", ensureAuthenticated, async (req, res) => {
     });
   } catch (err) {
     console.error("Error in /generate-devops:", err);
-    res.status(500).json({ error: "Error during DevOps file generation.", details: err.message });
+    res.status(500).json({
+      error: "Error during DevOps file generation.",
+      details: err.message,
+    });
   }
 });
-
-// index.js (add this endpoint after the /chat-security-report endpoint)
-
-// index.js (add this endpoint at the end of the Core API Routes section)
 
 app.post("/chat-security-report", ensureAuthenticated, async (req, res) => {
   try {
     const { repoPath, question } = req.body;
-    if (!repoPath || !path.isAbsolute(repoPath)) return res.status(400).json({ error: "An absolute repoPath is required." });
-    if (!question) return res.status(400).json({ error: "A question is required for the chat." });
-    
+    if (!repoPath || !path.isAbsolute(repoPath))
+      return res
+        .status(400)
+        .json({ error: "An absolute repoPath is required." });
+    if (!question)
+      return res
+        .status(400)
+        .json({ error: "A question is required for the chat." });
+
     const reportPath = path.join(repoPath, "infra", "security-report.md");
-    if (!fs.existsSync(reportPath)) return res.status(404).json({ error: "security-report.md not found." });
+    if (!fs.existsSync(reportPath))
+      return res.status(404).json({ error: "security-report.md not found." });
 
     const reportContent = fs.readFileSync(reportPath, "utf-8");
     const metadata = scanRepo(repoPath);
 
-    const prompt = `
+    // ✅ FIX: Removed quotes from around the {question} variable
+    const promptTemplate = PromptTemplate.fromTemplate(`
         You are a principal DevOps security consultant acting as a helpful chatbot.
         Your goal is to discuss the provided security report with the user and answer their questions.
 
         **Repository Metadata:**
-        - Services: ${JSON.stringify(metadata.services, null, 2)}
-        - Project Type: ${metadata.type || "unknown"}
+        - Services: {services}
+        - Project Type: {projectType}
 
         **Existing Security Report:**
         ---
-        ${reportContent}
+        {reportContent}
         ---
 
-        **User's Question:** "${question}"
+        **User's Question:** {question}
 
         **Your Task:**
         Based on all the context above, provide a helpful, conversational answer to the user's question. If they ask for a fix, provide a clear code snippet.
-        `;
+    `);
 
-    const response = await model.invoke(prompt);
+    const chatChain = promptTemplate.pipe(model).pipe(new StringOutputParser());
+
+    const recommendations = await chatChain.invoke({
+      services: JSON.stringify(metadata.services, null, 2),
+      projectType: metadata.type || "unknown",
+      reportContent: reportContent,
+      question: question,
+    });
+
     res.json({
       message: "Response generated successfully.",
-      recommendations: response.content,
+      recommendations: recommendations,
     });
   } catch (err) {
     console.error("Error in /chat-security-report:", err);
-    res.status(500).json({ error: "Error generating security recommendations.", details: err.message });
+    res.status(500).json({
+      error: "Error generating security recommendations.",
+      details: err.message,
+    });
   }
 });
 

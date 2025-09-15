@@ -1,5 +1,3 @@
-// src/api.js
-
 import axios from 'axios';
 
 // Configure your backend's base URL
@@ -48,19 +46,28 @@ export const api = {
     }
   },
 
-  /**
-   * ❗ THIS IS THE MISSING FUNCTION ❗
-   * Sends a question to the platform Q&A agent.
-   * @param {string} question The user's question.
-   */
-  askQuestion: async (question) => {
+  // ✅ NEW: Fetches the last 5 days of chat history for the current user.
+  getChatHistory: async () => {
     try {
-      const response = await apiClient.get('/scrape-and-query', { params: { query: question } });
+      const response = await apiClient.get("/api/chat-history");
       return response.data;
     } catch (error) {
-      throw new Error(error.response?.data?.details || 'Failed to get an answer.');
+      throw new Error(error.response?.data?.error || "Failed to fetch chat history.");
     }
   },
+
+  // ✅ NEW: Sends a question to the primary DevOps chatbot with history support.
+  askDevopsBot: async (question) => {
+    try {
+      const response = await apiClient.post('/devops-chatbot', { question });
+      return response.data;
+    } catch (error) {
+      throw new Error(error.response?.data?.details || 'Failed to get an answer from the bot.');
+    }
+  },
+  
+  // ❌ REMOVED: This function is obsolete and replaced by askDevopsBot.
+  // askQuestion: async (question) => { ... }
 
   /**
    * Sends a question to the security report chatbot.

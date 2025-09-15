@@ -1,26 +1,38 @@
+// agent.js
+
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { initializeAgentExecutorWithOptions } from "langchain/agents";
-import { DocsRetrieverTool } from "./tools/docsRetriever.js";
+import { AgentExecutor, createReactAgent } from "langchain/agents";
+import { pull } from "langchain/hub";
+import { TavilySearchResults } from "@langchain/community/tools/tavily_search";
 import dotenv from "dotenv";
+
 dotenv.config();
 
 export const model = new ChatGoogleGenerativeAI({
   model: "gemini-1.5-flash",
-  temperature: 0,
+  temperature: 0.3,
   apiKey: process.env.GOOGLE_API_KEY,
 });
 
 export async function createDeployAgent(vectorStore) {
-  const tools = [];
-
+  const searchTool = new TavilySearchResults();
+  const tools = [searchTool];
   if (vectorStore) {
     tools.push(new DocsRetrieverTool(vectorStore));
   }
 
-  const executor = await initializeAgentExecutorWithOptions(tools, model, {
-    agentType: "zero-shot-react-description",
-    verbose: true,
+  const prompt = await pull("hwchase17/react-chat");
+
+  const agent = await createReactAgent({
+    llm: model,
+    tools,
+    prompt,
+    stopSequences: ["Observation"],
   });
 
-  return executor;
+  return new AgentExecutor({
+    agent,
+    tools,
+    verbose: true,
+  });
 }

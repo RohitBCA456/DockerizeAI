@@ -40,7 +40,7 @@ const Sidebar = () => {
       <div className="mt-auto">
          {user && (
             <div className="flex items-center p-2 mb-4 border-t border-gray-700 pt-4">
-               <img src={user.thumbnail} alt={user.displayName} className="w-10 h-10 rounded-full mr-3" />
+               <img src={user.image} alt={user.displayName} className="w-10 h-10 rounded-full mr-3" />
                <div>
                   <p className="font-semibold text-sm">{user.displayName}</p>
                   <p className="text-xs text-gray-400">{user.email}</p>
