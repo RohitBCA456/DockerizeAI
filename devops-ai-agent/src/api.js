@@ -1,7 +1,7 @@
-import axios from 'axios';
+import axios from "axios";
 
 // Configure your backend's base URL
-const API_URL = 'http://localhost:4000';
+const API_URL = "http://localhost:4000";
 
 const apiClient = axios.create({
   baseURL: API_URL,
@@ -17,7 +17,7 @@ export const api = {
    */
   getCurrentUser: async () => {
     try {
-      const response = await apiClient.get('/api/current_user');
+      const response = await apiClient.get("/api/current_user");
       return response.data;
     } catch (error) {
       // It's normal for this to fail if not logged in
@@ -29,7 +29,7 @@ export const api = {
    * Logs the user out.
    */
   logout: async () => {
-    await apiClient.get('/api/logout');
+    await apiClient.get("/api/logout");
   },
 
   /**
@@ -38,11 +38,13 @@ export const api = {
    */
   generateDevops: async (repoPath) => {
     try {
-      const response = await apiClient.post('/generate-devops', { repoPath });
+      const response = await apiClient.post("/generate-devops", { repoPath });
       lastDevopsResult = response.data; // Cache the successful result
       return response.data;
     } catch (error) {
-      throw new Error(error.response?.data?.details || 'Failed to generate DevOps files.');
+      throw new Error(
+        error.response?.data?.details || "Failed to generate DevOps files."
+      );
     }
   },
 
@@ -52,20 +54,24 @@ export const api = {
       const response = await apiClient.get("/api/chat-history");
       return response.data;
     } catch (error) {
-      throw new Error(error.response?.data?.error || "Failed to fetch chat history.");
+      throw new Error(
+        error.response?.data?.error || "Failed to fetch chat history."
+      );
     }
   },
 
   // ✅ NEW: Sends a question to the primary DevOps chatbot with history support.
   askDevopsBot: async (question) => {
     try {
-      const response = await apiClient.post('/devops-chatbot', { question });
+      const response = await apiClient.post("/devops-chatbot", { question });
       return response.data;
     } catch (error) {
-      throw new Error(error.response?.data?.details || 'Failed to get an answer from the bot.');
+      throw new Error(
+        error.response?.data?.details || "Failed to get an answer from the bot."
+      );
     }
   },
-  
+
   // ❌ REMOVED: This function is obsolete and replaced by askDevopsBot.
   // askQuestion: async (question) => { ... }
 
@@ -74,15 +80,22 @@ export const api = {
    * @param {string} repoPath The path to the repository.
    * @param {string} question The user's question about the report.
    */
+  // This function in your api.js file is correct. No changes needed here.
   chatWithSecurityReport: async (repoPath, question) => {
     try {
-      const response = await apiClient.post('/chat-security-report', { repoPath, question });
+      const response = await apiClient.post("/chat-security-report", {
+        repoPath,
+        question,
+      });
+      // This correctly returns the { recommendations: "..." } object to the component
       return response.data;
     } catch (error) {
-      throw new Error(error.response?.data?.details || 'Failed to chat about security.');
+      throw new Error(
+        error.response?.data?.details || "Failed to chat about security."
+      );
     }
   },
-  
+
   /**
    * Sends a question to the general DevOps chatbot.
    * @param {string} repoPath The path to the repository.
@@ -90,10 +103,15 @@ export const api = {
    */
   chatWithDevops: async (repoPath, question) => {
     try {
-      const response = await apiClient.post('/chat-devops', { repoPath, question });
+      const response = await apiClient.post("/chat-devops", {
+        repoPath,
+        question,
+      });
       return response.data;
     } catch (error) {
-      throw new Error(error.response?.data?.details || 'Failed to chat about DevOps.');
+      throw new Error(
+        error.response?.data?.details || "Failed to chat about DevOps."
+      );
     }
   },
 

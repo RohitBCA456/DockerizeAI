@@ -23,7 +23,8 @@
     "react-router-dom": "^6.23.1",
     "react-syntax-highlighter": "^15.5.0",
     "rehype-raw": "^7.0.0",
-    "remark-gfm": "^4.0.0"
+    "remark-gfm": "^4.0.0",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

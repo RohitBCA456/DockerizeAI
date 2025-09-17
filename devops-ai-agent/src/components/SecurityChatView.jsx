@@ -9,16 +9,23 @@ import { ShieldAlert, Wand2, FileText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-// ✅ NEW: Import syntax highlighter for attractive code blocks
+// Import syntax highlighter for attractive code blocks
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-// ✅ NEW: Custom components to render markdown beautifully
+// Custom components to render markdown beautifully
 const customRenderers = {
-  h2: ({ node, ...props }) => <h2 className="text-xl font-bold border-b border-gray-600 pb-2 mb-4" {...props} />,
-  h3: ({ node, ...props }) => <h3 className="text-lg font-semibold mb-3" {...props} />,
+  h2: ({ node, ...props }) => (
+    <h2
+      className="text-xl font-bold border-b border-gray-600 pb-2 mb-4"
+      {...props}
+    />
+  ),
+  h3: ({ node, ...props }) => (
+    <h3 className="text-lg font-semibold mb-3" {...props} />
+  ),
   code({ node, inline, className, children, ...props }) {
-    const match = /language-(\w+)/.exec(className || '');
+    const match = /language-(\w+)/.exec(className || "");
     return !inline && match ? (
       <SyntaxHighlighter
         style={vscDarkPlus}
@@ -26,10 +33,13 @@ const customRenderers = {
         PreTag="div"
         {...props}
       >
-        {String(children).replace(/\n$/, '')}
+        {String(children).replace(/\n$/, "")}
       </SyntaxHighlighter>
     ) : (
-      <code className="bg-gray-700 rounded-md px-1.5 py-1 text-sm font-mono" {...props}>
+      <code
+        className="bg-gray-700 rounded-md px-1.5 py-1 text-sm font-mono"
+        {...props}
+      >
         {children}
       </code>
     );
@@ -41,14 +51,11 @@ const SecurityChatView = () => {
   const [detailedReport, setDetailedReport] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  
-  // ✅ FIX: We need the repoPath for the API call, store it in state
   const [repoPath, setRepoPath] = useState(null);
 
   useEffect(() => {
-    // ✅ FIX: Load the entire result from sessionStorage, not from the old API cache
     const savedResultString = sessionStorage.getItem("devopsResult");
-    
+
     if (!savedResultString) {
       setError("Please generate a DevOps report first to view security issues.");
       return;
@@ -57,15 +64,23 @@ const SecurityChatView = () => {
     try {
       const lastResult = JSON.parse(savedResultString);
       const initialReport = lastResult?.generatedContent?.securityReport;
-      
-      // ✅ FIX: Get the repoPath from the saved result object for consistency
       const sourceRepoPath = lastResult?.sourceRepoPath;
+
+      // ✅ LOAD: Check for a previously saved detailed report
+      const savedDetailedReport = lastResult?.generatedContent?.detailedSecurityReport;
 
       if (initialReport && sourceRepoPath) {
         setSummaryReport(initialReport);
         setRepoPath(sourceRepoPath);
+
+        // ✅ LOAD: If a detailed report was found, set it in the state
+        if (savedDetailedReport) {
+          setDetailedReport(savedDetailedReport);
+        }
       } else {
-        setError("No security report found. Please generate one from the DevOps tab first.");
+        setError(
+          "No security report found. Please generate one from the DevOps tab first."
+        );
       }
     } catch (e) {
       setError("Could not load repository metadata. Please re-scan your project.");
@@ -74,8 +89,8 @@ const SecurityChatView = () => {
 
   const handleGenerateDetails = async () => {
     if (!repoPath) {
-        setError("Repository path is missing. Cannot generate report.");
-        return;
+      setError("Repository path is missing. Cannot generate report.");
+      return;
     }
     setLoading(true);
     setError(null);
@@ -87,8 +102,19 @@ const SecurityChatView = () => {
         repoPath,
         detailedQuestion
       );
-      // The API response for this agent might be in `response.response`
-      setDetailedReport(response.output);
+
+      const newDetailedReport = response.recommendations;
+      setDetailedReport(newDetailedReport); // Update state to show the new report immediately
+
+      // ✅ SAVE: Save the generated detailed report to sessionStorage for persistence
+      const savedResultString = sessionStorage.getItem("devopsResult");
+      if (savedResultString) {
+        const lastResult = JSON.parse(savedResultString);
+        // Add the detailed report to the object
+        lastResult.generatedContent.detailedSecurityReport = newDetailedReport;
+        // Save the updated object back to sessionStorage
+        sessionStorage.setItem("devopsResult", JSON.stringify(lastResult));
+      }
     } catch (err) {
       setError(`Failed to generate detailed report: ${err.message}`);
     } finally {
@@ -112,8 +138,10 @@ const SecurityChatView = () => {
         <h2 className="text-2xl font-bold text-white mb-4">Issues Summary</h2>
         <Card className="flex-grow p-4 overflow-y-auto">
           <article className="prose prose-invert max-w-none">
-            {/* ✅ UPGRADE: Use custom renderers */}
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={customRenderers}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={customRenderers}
+            >
               {summaryReport || "Loading summary..."}
             </ReactMarkdown>
           </article>
@@ -136,8 +164,10 @@ const SecurityChatView = () => {
           ) : detailedReport ? (
             <div className="w-full h-full overflow-y-auto">
               <article className="prose prose-invert max-w-none">
-                {/* ✅ UPGRADE: Use custom renderers here too */}
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={customRenderers}>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={customRenderers}
+                >
                   {detailedReport}
                 </ReactMarkdown>
               </article>
